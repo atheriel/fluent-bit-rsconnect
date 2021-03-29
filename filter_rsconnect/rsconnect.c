@@ -6,10 +6,6 @@
 #include <fluent-bit/flb_filter_plugin.h>
 #include <fluent-bit/flb_pack.h>
 
-#include <fcntl.h>
-#include <sys/stat.h>
-#include <sys/types.h>
-
 struct rsconnect_ctx {
     /* API configuration. */
     char *api_host;
@@ -42,68 +38,11 @@ struct rsconnect_ctx {
 };
 
 struct rsconnect_meta {
-    int pid;
     int bundle_id;
     flb_sds_t name;
     flb_sds_t mode;
-    /* const char *name; */
-    /* const char *mode; */
     int fields;
 };
-
-static int read_int_from_file(const char *path, int *out)
-{
-    int ret;
-    long bytes;
-    struct stat st;
-    int fd;
-    char *buf = NULL;
-    char *ptr = NULL;
-
-    fd = open(path, O_RDONLY);
-    if (fd < 0) {
-        return -1;
-    }
-
-    ret = fstat(fd, &st);
-    if (ret == -1) {
-        flb_errno();
-        close(fd);
-        return -1;
-    }
-
-    if (st.st_size == 0) {
-        close(fd);
-        return -1;
-    }
-
-    buf = flb_malloc(st.st_size + sizeof(char));
-    if (!buf) {
-        flb_errno();
-        close(fd);
-        return -1;
-    }
-
-    bytes = read(fd, buf, st.st_size);
-    if (bytes < 0) {
-        flb_errno();
-        flb_free(buf);
-        close(fd);
-        return -1;
-    }
-
-    /* fread does not add null byte */
-    buf[st.st_size] = '\0';
-
-    close(fd);
-
-    *out = strtol(buf, &ptr, 10);
-    if (ptr == buf || *ptr != '\0') {
-        return -1;
-    }
-
-    return 0;
-}
 
 static int cb_rsconnect_init(struct flb_filter_instance *f_ins,
                              struct flb_config *config,
@@ -295,6 +234,7 @@ static int parse_tag(struct flb_filter_instance *f_ins,
 /* Gather metadata from API Server */
 static int get_job_api_metadata(struct flb_filter_instance *f_ins,
                                 struct rsconnect_ctx *ctx,
+                                const char *job,
                                 struct rsconnect_meta *meta)
 {
     int i;
@@ -312,7 +252,7 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     char *data = NULL;
     char *guid = NULL;
 
-    if (!meta->bundle_id) {
+    if (!job) {
         return 0;
     }
 
@@ -322,13 +262,17 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
         return -1;
     }
 
-    /* First, we need to get the "content GUID" for the bundle, so that we can
-       query a separate endpoint for relevant info. This involves (1) building
-       and making an HTTP request; and (2) parsing the necessary keys out the
-       JSON (by converting to msgpack, first). */
+    /*
+     * First, we need to get the "content GUID" for these logs, so that we can
+     * query the official content endpoint for relevant info. There is currently
+     * no official way to map from job IDs to applications, but there is an
+     * undocumented API I have been told is relatively safe to use for now.
+     *
+     * This involves (1) building and making an HTTP request; and (2) parsing
+     * the necessary keys out the JSON (by converting to msgpack, first).
+     */
 
-    snprintf(uri, sizeof(uri) - 1, "/__api__/v1/experimental/bundles/%d",
-             meta->bundle_id);
+    snprintf(uri, sizeof(uri) - 1, "/__api__/applications/%s", job);
 
     client = flb_http_client(conn, FLB_HTTP_GET, uri, NULL, 0, NULL, 0, NULL, 0);
     if (!client) {
@@ -350,17 +294,17 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
 
     if (client->resp.status == 404) {
         /* It's arguable that this should be a hard error instead. */
-        flb_plg_warn(f_ins, "can't find bundle %d in the API", meta->bundle_id);
+        flb_plg_warn(f_ins, "can't find job %s in the API", job);
         ret = -1;
         goto release;
     }
     else if (client->resp.status != 200) {
         if (client->resp.payload_size > 0) {
-            flb_plg_warn(f_ins, "expected API response: status=%d, body=%s",
+            flb_plg_warn(f_ins, "unexpected job lookup response: status=%d body=\"%s\"",
                          client->resp.status, client->resp.payload);
         }
         else {
-            flb_plg_warn(f_ins, "unexpected API response: status=%d",
+            flb_plg_warn(f_ins, "unexpected job lookup response: status=%d",
                          client->resp.status);
         }
         ret = -1;
@@ -370,7 +314,8 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     ret = flb_pack_json(client->resp.payload, client->resp.payload_size, &data,
                         &size, &root_type);
     if (ret < 0) {
-        flb_plg_error(f_ins, "pack error");
+        flb_plg_error(f_ins, "failed to deserialize job lookup: error=%d size=%d body=\"%s\"",
+                      ret, client->resp.payload_size, client->resp.payload);
         goto release;
     }
 
@@ -382,7 +327,7 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
         goto release;
     }
     if (result.data.type != MSGPACK_OBJECT_MAP){
-        flb_plg_error(f_ins, "unexpected API response: not a JSON object");
+        flb_plg_error(f_ins, "unexpected job lookup response: not a JSON object");
         msgpack_unpacked_destroy(&result);
         ret = -1;
         goto release;
@@ -390,18 +335,24 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     for (i = 0; i < result.data.via.map.size; i++) {
         k = result.data.via.map.ptr[i].key;
         v = result.data.via.map.ptr[i].val;
-        if (k.via.str.size == 12 && strncmp(k.via.str.ptr, "content_guid", 12) == 0) {
+        if (k.via.str.size == 4 && strncmp(k.via.str.ptr, "guid", 4) == 0) {
             guid = flb_strndup(v.via.str.ptr, v.via.str.size);
-            break;
+        }
+        if (k.via.str.size == 9 && strncmp(k.via.str.ptr, "bundle_id", 9) == 0) {
+            meta->bundle_id = (int) v.via.i64;
+            meta->fields++;
         }
     }
     msgpack_unpacked_destroy(&result);
     flb_free(data);
 
     if (!guid) {
-        flb_plg_error(f_ins, "unexpected API response format: no content_guid key");
+        flb_plg_error(f_ins, "unexpected job lookup response: no \"guid\" key");
         ret = -1;
         goto release;
+    }
+    if (!meta->bundle_id) {
+        flb_plg_warn(f_ins, "unexpected job lookup response: no \"bundle_id\" key");
     }
 
     flb_http_client_destroy(client);
@@ -436,11 +387,11 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     }
     else if (client->resp.status != 200) {
         if (client->resp.payload_size > 0) {
-            flb_plg_warn(f_ins, "expected API response: status=%d, body=%s",
+            flb_plg_warn(f_ins, "unexpected content lookup response: status=%d body=\"%s\"",
                          client->resp.status, client->resp.payload);
         }
         else {
-            flb_plg_warn(f_ins, "unexpected API response: status=%d",
+            flb_plg_warn(f_ins, "unexpected content lookup response: status=%d",
                          client->resp.status);
         }
         ret = -1;
@@ -450,7 +401,8 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     ret = flb_pack_json(client->resp.payload, client->resp.payload_size, &data,
                         &size, &root_type);
     if (ret < 0) {
-        flb_plg_error(f_ins, "pack error");
+        flb_plg_error(f_ins, "failed to deserialize content lookup: error=%d size=%d body=\"%s\"",
+                      ret, client->resp.payload_size, client->resp.payload);
         goto release;
     }
 
@@ -465,7 +417,7 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
         goto release;
     }
     if (result.data.type != MSGPACK_OBJECT_MAP){
-        flb_plg_error(f_ins, "unexpected API response: not a JSON object");
+        flb_plg_error(f_ins, "unexpected content lookup response: not a JSON object");
         msgpack_unpacked_destroy(&result);
         ret = -1;
         goto release;
@@ -486,10 +438,10 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     flb_free(data);
 
     if (!meta->name) {
-        flb_plg_warn(f_ins, "unexpected API response format: no name key");
+        flb_plg_warn(f_ins, "unexpected content lookup response: no \"name\" key");
     }
     if (!meta->mode) {
-        flb_plg_warn(f_ins, "unexpected API response format: no app_mode key");
+        flb_plg_warn(f_ins, "unexpected content lookup response: no \"app_mode\" key");
     }
 
     ret = 0;
@@ -553,34 +505,8 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
     id = flb_hash_get(ctx->hash_table, job, strlen(job),
                       (void **) &meta_buff, &meta_size);
     if (id == -1) {
-        /* Grab some metadata from the filesystem. */
-        path_len = strlen(path);
-
-        snprintf(tmp, path_len + 3, "%spid", path);
-        if (read_int_from_file(tmp, &meta.pid) < 0) {
-            flb_plg_warn(f_ins, "can't read PID from path: %spid", path);
-            if (strncmp(job, "201", 3) == 0) {
-                meta.pid = 1;
-                meta.fields++;
-            }
-        } else {
-            meta.fields++;
-        }
-
-        snprintf(tmp, path_len + 5, "%sbundle", path);
-        if (read_int_from_file(tmp, &meta.bundle_id) < 0) {
-            flb_plg_warn(f_ins, "can't read bundle ID from path: %sbundle", path);
-            if (strncmp(job, "201", 3) == 0) {
-                meta.bundle_id = 9423;
-                meta.fields++;
-            }
-        } else {
-            meta.fields++;
-        }
-
-        /* Grab other metadata from the RStudio Connect API. */
-
-        get_job_api_metadata(f_ins, ctx, &meta);
+        /* Grab metadata from the RStudio Connect API. */
+        get_job_api_metadata(f_ins, ctx, job, &meta);
 
         /* Serialise all metadata fields via msgpack. */
 
@@ -592,11 +518,6 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
             msgpack_pack_str(&meta_pck, 6);
             msgpack_pack_str_body(&meta_pck, "bundle", 6);
             msgpack_pack_int(&meta_pck, meta.bundle_id);
-        }
-        if (meta.pid) {
-            msgpack_pack_str(&meta_pck, 3);
-            msgpack_pack_str_body(&meta_pck, "pid", 3);
-            msgpack_pack_int(&meta_pck, meta.pid);
         }
         if (meta.name) {
             msgpack_pack_str(&meta_pck, 4);
@@ -618,6 +539,9 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
         if (id >= 0) {
             msgpack_sbuffer_destroy(&meta_sbuf);
             flb_hash_get_by_id(ctx->hash_table, id, job, &meta_buff, &meta_size);
+            flb_plg_info(f_ins, "add job metadata: job=%s bundle_id=%d name=%s app_mode=%s",
+                         job, meta.bundle_id, meta.name ? meta.name : "(nil)",
+                         meta.mode ? meta.mode : "(nil)");
         }
     }
 
