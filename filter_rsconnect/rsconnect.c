@@ -281,7 +281,7 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
         return -1;
     }
 
-    flb_http_buffer_size(client, 4096);
+    flb_http_buffer_size(client, ctx->buffer_size);
     flb_http_add_header(client, "User-Agent", 10, "Fluent-Bit", 10);
     flb_http_add_header(client, "Authorization", 13, ctx->auth,
                         flb_sds_len(ctx->auth));
@@ -369,7 +369,7 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
         return -1;
     }
 
-    flb_http_buffer_size(client, 4096);
+    flb_http_buffer_size(client, ctx->buffer_size);
     flb_http_add_header(client, "User-Agent", 10, "Fluent-Bit", 10);
     flb_http_add_header(client, "Authorization", 13, ctx->auth,
                         flb_sds_len(ctx->auth));
