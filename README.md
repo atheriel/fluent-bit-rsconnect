@@ -74,7 +74,7 @@ The following is a sample Fluent Bit configuration using this filter plugin:
     Api_Url http://localhost:3939
     Api_Key rCliECUlqwMH85CRWt5ZC9DY90Bab375
     # HTTP client settings, all optional.
-    Buffer_Size 4K
+    Buffer_Size 32K
     tls.verify On
 
 [OUTPUT]

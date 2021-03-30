@@ -638,7 +638,7 @@ static struct flb_config_map config_map[] = {
      "RStudio Connect API Key."
     },
     {
-     FLB_CONFIG_MAP_SIZE, "buffer_size", "4K",
+     FLB_CONFIG_MAP_SIZE, "buffer_size", "32K",
      0, FLB_TRUE, offsetof(struct rsconnect_ctx, buffer_size),
      "Buffer size for the API client",
     },
