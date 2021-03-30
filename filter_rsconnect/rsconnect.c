@@ -308,6 +308,7 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     if (result.data.type != MSGPACK_OBJECT_MAP){
         flb_plg_error(f_ins, "unexpected job lookup response: not a JSON object");
         msgpack_unpacked_destroy(&result);
+        flb_free(data);
         ret = -1;
         goto release;
     }
@@ -398,6 +399,7 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     if (result.data.type != MSGPACK_OBJECT_MAP){
         flb_plg_error(f_ins, "unexpected content lookup response: not a JSON object");
         msgpack_unpacked_destroy(&result);
+        flb_free(data);
         ret = -1;
         goto release;
     }
@@ -484,6 +486,9 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
     if (id == -1) {
         /* Grab metadata from the RStudio Connect API. */
         get_job_api_metadata(f_ins, ctx, job, &meta);
+        flb_plg_info(f_ins, "get_job_api_metadata(): job=%s bundle_id=%d name=%s app_mode=%s",
+                     job, meta.bundle_id, meta.name ? meta.name : "(nil)",
+                     meta.mode ? meta.mode : "(nil)");
 
         /* Serialise all metadata fields via msgpack. */
 
@@ -501,25 +506,25 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
             msgpack_pack_str_body(&meta_pck, "name", 4);
             msgpack_pack_str(&meta_pck, flb_sds_len(meta.name));
             msgpack_pack_str_body(&meta_pck, meta.name, flb_sds_len(meta.name));
-            flb_free(meta.name);
+            flb_sds_destroy(meta.name);
         }
         if (meta.mode) {
             msgpack_pack_str(&meta_pck, 8);
             msgpack_pack_str_body(&meta_pck, "app_mode", 8);
             msgpack_pack_str(&meta_pck, flb_sds_len(meta.mode));
             msgpack_pack_str_body(&meta_pck, meta.mode, flb_sds_len(meta.mode));
-            flb_free(meta.mode);
+            flb_sds_destroy(meta.mode);
         }
 
         id = flb_hash_add(ctx->hash_table, job, strlen(job),
                           meta_sbuf.data, meta_sbuf.size);
         if (id >= 0) {
-            msgpack_sbuffer_destroy(&meta_sbuf);
             flb_hash_get_by_id(ctx->hash_table, id, job, &meta_buff, &meta_size);
-            flb_plg_info(f_ins, "add job metadata: job=%s bundle_id=%d name=%s app_mode=%s",
-                         job, meta.bundle_id, meta.name ? meta.name : "(nil)",
-                         meta.mode ? meta.mode : "(nil)");
         }
+        else {
+            flb_plg_error(f_ins, "failed to add hash: job=%s error=%d", job, id);
+        }
+        msgpack_sbuffer_destroy(&meta_sbuf);
     }
 
     msgpack_unpacked_init(&result);
@@ -578,6 +583,9 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
         modified++;
     }
     msgpack_unpacked_destroy(&result);
+    flb_free(job);
+    flb_free(session);
+    flb_free(stream);
 
     if (!modified) {
         msgpack_sbuffer_destroy(&buffer);
@@ -603,6 +611,15 @@ static int cb_rsconnect_exit(void *data, struct flb_config *config)
     }
     if (ctx->hash_table) {
         flb_hash_destroy(ctx->hash_table);
+    }
+    if (ctx->tls) {
+        flb_tls_destroy(ctx->tls);
+    }
+    if (ctx->auth) {
+        flb_sds_destroy(ctx->auth);
+    }
+    if (ctx->api_host) {
+        flb_free(ctx->api_host);
     }
 
     flb_free(ctx);
