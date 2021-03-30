@@ -43,5 +43,10 @@ set(FLB_PATH_ROOT_SOURCE ${FLB_SOURCE})
 include(${FLB_SOURCE}/cmake/libraries.cmake)
 include(${FLB_SOURCE}/cmake/headers.cmake)
 
+if(NOT DEFINED CMAKE_BUILD_TYPE OR CMAKE_BUILD_TYPE STREQUAL "")
+	set(CMAKE_BUILD_TYPE "RelWithDebInfo")
+endif()
+message(STATUS "Build type: ${CMAKE_BUILD_TYPE}")
+
 # Build plugin
 add_subdirectory(${PLUGIN_NAME})
