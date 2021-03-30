@@ -171,7 +171,7 @@ static int cb_rsconnect_init(struct flb_filter_instance *f_ins,
 
 static int parse_tag(struct flb_filter_instance *f_ins,
                      const char *tag, int tag_len,
-                     char **job, char **session, char **stream)
+                     flb_sds_t *job, flb_sds_t *session, flb_sds_t *stream)
 {
     char *ptr;
     char *tmp;
@@ -191,7 +191,7 @@ static int parse_tag(struct flb_filter_instance *f_ins,
         return -1;
     }
     else {
-        *job = flb_strndup(ptr, tmp - ptr);
+        *job = flb_sds_create_len(ptr, tmp - ptr);
         ptr = tmp;
         ptr++;
     }
@@ -199,11 +199,11 @@ static int parse_tag(struct flb_filter_instance *f_ins,
     tmp = strchr(ptr, '.');
     if (!tmp) {
         flb_plg_warn(f_ins, "invalid tag pattern: no matching session id");
-        flb_free(*job);
+        flb_sds_destroy(*job);
         return -1;
     }
     else {
-        *session = flb_strndup(ptr, tmp - ptr);
+        *session = flb_sds_create_len(ptr, tmp - ptr);
         ptr = tmp;
         ptr++;
     }
@@ -211,12 +211,12 @@ static int parse_tag(struct flb_filter_instance *f_ins,
     tmp = strstr(ptr, "job.");
     if (!tmp) {
         flb_plg_warn(f_ins, "invalid tag pattern: no matching stream");
-        flb_free(*job);
-        flb_free(*session);
+        flb_sds_destroy(*job);
+        flb_sds_destroy(*session);
         return -1;
     }
     ptr += 4;
-    *stream = flb_strndup(ptr, tag_len - (ptr - tag));
+    *stream = flb_sds_create_len(ptr, tag_len - (ptr - tag));
 
     return 0;
 }
@@ -457,9 +457,9 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
     msgpack_object *obj;
     msgpack_object map;
     int i;
-    char *job;
-    char *session;
-    char *stream;
+    flb_sds_t job;
+    flb_sds_t session;
+    flb_sds_t stream;
     int id;
     const char *meta_buff;
     size_t meta_size;
@@ -517,7 +517,7 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
             flb_sds_destroy(meta.mode);
         }
 
-        id = flb_hash_add(ctx->hash_table, job, strlen(job),
+        id = flb_hash_add(ctx->hash_table, job, flb_sds_len(job),
                           meta_sbuf.data, meta_sbuf.size);
         if (id >= 0) {
             flb_hash_get_by_id(ctx->hash_table, id, job, &meta_buff, &meta_size);
@@ -584,9 +584,9 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
         modified++;
     }
     msgpack_unpacked_destroy(&result);
-    flb_free(job);
-    flb_free(session);
-    flb_free(stream);
+    flb_sds_destroy(job);
+    flb_sds_destroy(session);
+    flb_sds_destroy(stream);
 
     if (!modified) {
         msgpack_sbuffer_destroy(&buffer);
