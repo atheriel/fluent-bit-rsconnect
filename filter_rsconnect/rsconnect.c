@@ -160,8 +160,7 @@ static int cb_rsconnect_init(struct flb_filter_instance *f_ins,
 
 static int parse_tag(struct flb_filter_instance *f_ins,
                      const char *tag, int tag_len,
-                     char **job, char **session, char **stream,
-                     char **path)
+                     char **job, char **session, char **stream)
 {
     char *ptr;
     char *tmp;
@@ -207,26 +206,6 @@ static int parse_tag(struct flb_filter_instance *f_ins,
     }
     ptr += 4;
     *stream = flb_strndup(ptr, tag_len - (ptr - tag));
-
-    /* Reconstruct the absolute path of the parent directory of the log file
-       from the tag. TODO: Windows support.*/
-
-    *path = flb_strndup(tag, tag_len);
-    ptr = *path;
-    while((ptr = strchr(ptr, '.')) != NULL) {
-        *ptr++ = '/';
-    }
-    ptr = strstr(*path, "job/");
-    if (!ptr) {
-        flb_plg_warn(f_ins, "invalid tag pattern: unexpected job directory "
-                     "structure");
-        flb_free(*job);
-        flb_free(*session);
-        flb_free(*stream);
-        flb_free(*path);
-        return -1;
-    }
-    *ptr = '\0'; /* Truncate. */
 
     return 0;
 }
@@ -468,10 +447,7 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
     char *job;
     char *session;
     char *stream;
-    char *path;
-    size_t path_len;
     int id;
-    char tmp[PATH_MAX + 1];
     const char *meta_buff;
     size_t meta_size;
     msgpack_unpacked fields;
@@ -495,7 +471,7 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
 
     /* Parse the tag to determine job-related metadata. */
 
-    if (parse_tag(f_ins, tag, tag_len, &job, &session, &stream, &path) < 0) {
+    if (parse_tag(f_ins, tag, tag_len, &job, &session, &stream) < 0) {
         return FLB_FILTER_NOTOUCH;
     }
     /* flb_plg_debug(f_ins, "job=%s session=%s stream=%s path=%s", job, session, stream, path); */
