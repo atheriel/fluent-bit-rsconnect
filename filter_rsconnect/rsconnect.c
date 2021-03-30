@@ -458,6 +458,7 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
     int modified = 0;
     size_t meta_off = 0;
     struct rsconnect_meta meta = {0};
+    (void) config;
 
     /* Skip over the prefix, minus the trailing '.' character. */
 
@@ -591,6 +592,7 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
 
 static int cb_rsconnect_exit(void *data, struct flb_config *config)
 {
+    (void) config;
     struct rsconnect_ctx *ctx = data;
     if (ctx != NULL) {
         return 0;
