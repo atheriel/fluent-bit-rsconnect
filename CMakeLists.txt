@@ -23,6 +23,11 @@ macro(FLB_PLUGIN name src deps)
   set_target_properties(flb-${name} PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
   target_link_libraries(flb-${name} ${deps})
+  if(MSVC)
+    target_compile_options(flb-${name} PRIVATE /W4 /WX)
+  else()
+    target_compile_options(flb-${name} PRIVATE -Wall)
+  endif()
 endmacro()
 
 # Fluent Bit source code environment
