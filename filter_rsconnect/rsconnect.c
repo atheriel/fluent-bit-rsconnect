@@ -13,11 +13,6 @@ struct rsconnect_ctx {
     int api_https;
     flb_sds_t api_key;
 
-    /* Tag_Prefix, used to determine the location of the log on the
-       filesystem when used with the Tail output plugin. */
-    flb_sds_t tag_prefix;
-    size_t tag_prefix_len;
-
     /* HTTP client buffer size. */
     size_t buffer_size;
 
@@ -69,7 +64,6 @@ static int cb_rsconnect_init(struct flb_filter_instance *f_ins,
         flb_free(ctx);
         return -1;
     }
-    ctx->tag_prefix_len = flb_sds_len(ctx->tag_prefix);
 
     /* Required fields. */
 
@@ -462,16 +456,6 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
     struct rsconnect_meta meta = {0};
     (void) config;
 
-    /* Skip over the prefix, minus the trailing '.' character. */
-
-    if (strncmp(tag, ctx->tag_prefix, ctx->tag_prefix_len) != 0) {
-        flb_plg_error(f_ins, "incoming record tag (%s) does not match "
-                      "Tag_Prefix (%s), skipping...", tag, ctx->tag_prefix);
-        return FLB_FILTER_NOTOUCH;
-    }
-    tag += ctx->tag_prefix_len - 1;
-    tag_len -= ctx->tag_prefix_len - 1;
-
     /* Parse the tag to determine job-related metadata. */
 
     if (parse_tag(f_ins, tag, tag_len, &job, &session, &stream) < 0) {
@@ -627,11 +611,6 @@ static int cb_rsconnect_exit(void *data, struct flb_config *config)
 }
 
 static struct flb_config_map config_map[] = {
-    {
-     FLB_CONFIG_MAP_STR, "tag_prefix", "rsconnect.",
-     0, FLB_TRUE, offsetof(struct rsconnect_ctx, tag_prefix),
-     "Prefix used in the Tag field of the Tail input plugin."
-    },
     {
      FLB_CONFIG_MAP_STR, "api_key", NULL,
      0, FLB_TRUE, offsetof(struct rsconnect_ctx, api_key),
