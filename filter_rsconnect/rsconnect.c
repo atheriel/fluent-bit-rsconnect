@@ -221,6 +221,19 @@ static int parse_tag(struct flb_filter_instance *f_ins,
     return 0;
 }
 
+/*
+ * Small helper for the common operation of writing key-value string pairs into
+ * a msgpack packer.
+ */
+static void pack_sds_kv(msgpack_packer *pck, char *key, size_t key_len,
+                        flb_sds_t val)
+{
+    msgpack_pack_str(pck, key_len);
+    msgpack_pack_str_body(pck, key, key_len);
+    msgpack_pack_str(pck, flb_sds_len(val));
+    msgpack_pack_str_body(pck, val, flb_sds_len(val));
+}
+
 /* Gather metadata from API Server */
 static int get_job_api_metadata(struct flb_filter_instance *f_ins,
                                 struct rsconnect_ctx *ctx,
@@ -503,17 +516,11 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
             msgpack_pack_int(&meta_pck, meta.bundle_id);
         }
         if (meta.name) {
-            msgpack_pack_str(&meta_pck, 4);
-            msgpack_pack_str_body(&meta_pck, "name", 4);
-            msgpack_pack_str(&meta_pck, flb_sds_len(meta.name));
-            msgpack_pack_str_body(&meta_pck, meta.name, flb_sds_len(meta.name));
+            pack_sds_kv(&meta_pck, "name", 4, meta.name);
             flb_sds_destroy(meta.name);
         }
         if (meta.mode) {
-            msgpack_pack_str(&meta_pck, 8);
-            msgpack_pack_str_body(&meta_pck, "app_mode", 8);
-            msgpack_pack_str(&meta_pck, flb_sds_len(meta.mode));
-            msgpack_pack_str_body(&meta_pck, meta.mode, flb_sds_len(meta.mode));
+            pack_sds_kv(&meta_pck, "app_mode", 8, meta.mode);
             flb_sds_destroy(meta.mode);
         }
 
@@ -558,23 +565,12 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
             msgpack_pack_object(&packer, map.via.map.ptr[i].val);
         }
 
-        /* Add the rsconnect fieldsdata. We know these are NUL-terminated so
-           we can use strlen() safely. */
-        msgpack_pack_str(&packer, 3);
-        msgpack_pack_str_body(&packer, "job", 3);
-        msgpack_pack_str(&packer, strlen(job));
-        msgpack_pack_str_body(&packer, job, strlen(job));
+        /* Add stream-specific metadata. */
+        pack_sds_kv(&packer, "job", 3, job);
+        pack_sds_kv(&packer, "session", 7, session);
+        pack_sds_kv(&packer, "stream", 6, stream);
 
-        msgpack_pack_str(&packer, 7);
-        msgpack_pack_str_body(&packer, "session", 7);
-        msgpack_pack_str(&packer, strlen(session));
-        msgpack_pack_str_body(&packer, session, strlen(session));
-
-        msgpack_pack_str(&packer, 6);
-        msgpack_pack_str_body(&packer, "stream", 6);
-        msgpack_pack_str(&packer, strlen(stream));
-        msgpack_pack_str_body(&packer, stream, strlen(stream));
-
+        /* Add Connect metadata. */
         for (i = 0; i < fields.data.via.map.size; i++) {
             msgpack_pack_object(&packer, fields.data.via.map.ptr[i].key);
             msgpack_pack_object(&packer, fields.data.via.map.ptr[i].val);
