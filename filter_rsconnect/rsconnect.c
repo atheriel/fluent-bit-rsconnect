@@ -8,9 +8,7 @@
 
 struct rsconnect_ctx {
     /* API configuration. */
-    char *api_host;
-    int api_port;
-    int api_https;
+    flb_sds_t api_url;
     flb_sds_t api_key;
 
     /* HTTP client buffer size. */
@@ -39,12 +37,36 @@ struct rsconnect_meta {
     int fields;
 };
 
+static void rsconnect_ctx_destroy(struct rsconnect_ctx *ctx)
+{
+    if (!ctx) {
+        return;
+    }
+
+    if (ctx->hash_table) {
+        flb_hash_destroy(ctx->hash_table);
+    }
+    if (ctx->upstream) {
+        flb_upstream_destroy(ctx->upstream);
+    }
+    if (ctx->tls) {
+        flb_tls_destroy(ctx->tls);
+    }
+    if (ctx->auth) {
+        flb_sds_destroy(ctx->auth);
+    }
+
+    flb_free(ctx);
+}
+
 static int cb_rsconnect_init(struct flb_filter_instance *f_ins,
                              struct flb_config *config,
                              void *data)
 {
     int off;
     int ret;
+    flb_sds_t api_host;
+    int api_port;
     struct rsconnect_ctx *ctx = NULL;
     const char *tmp = NULL;
     const char *ptr = NULL;
@@ -61,7 +83,7 @@ static int cb_rsconnect_init(struct flb_filter_instance *f_ins,
     ret = flb_filter_config_map_set(f_ins, (void *) ctx);
     if (ret == -1) {
         flb_plg_error(f_ins, "configuration error");
-        flb_free(ctx);
+        rsconnect_ctx_destroy(ctx);
         return -1;
     }
 
@@ -69,7 +91,7 @@ static int cb_rsconnect_init(struct flb_filter_instance *f_ins,
 
     if (!ctx->api_key) {
         flb_plg_error(f_ins, "configuration error: missing 'api_key'");
-        flb_free(ctx);
+        rsconnect_ctx_destroy(ctx);
         return -1;
     }
     ctx->auth = flb_sds_create_len("Key ", 4);
@@ -78,64 +100,59 @@ static int cb_rsconnect_init(struct flb_filter_instance *f_ins,
     /* Parse the URL for port/scheme info. This is mostly cribbed from the
        Kubernetes filter plugin. */
 
-    tmp = flb_filter_get_property("api_url", f_ins);
+    tmp = ctx->api_url;
     if (!tmp) {
         flb_plg_error(f_ins, "missing URL");
-        flb_free(ctx);
+        rsconnect_ctx_destroy(ctx);
         return -1;
     }
     if (strncmp(tmp, "http://", 7) == 0) {
         off = 7;
-        ctx->api_https = FLB_FALSE;
     }
     else if (strncmp(tmp, "https://", 8) == 0) {
         off = 8;
-        ctx->api_https = FLB_TRUE;
+        io_type = FLB_IO_TLS;
     }
     else {
         flb_plg_error(f_ins, "invalid URL scheme: %s", tmp);
-        flb_free(ctx);
+        rsconnect_ctx_destroy(ctx);
         return -1;
     }
     ptr = tmp + off;
     tmp = strchr(ptr, ':');
     if (tmp) {
-        ctx->api_host = flb_strndup(ptr, tmp - ptr);
+        api_host = flb_sds_create_len(ptr, tmp - ptr);
         tmp++;
-        ctx->api_port = atoi(tmp);
+        api_port = atoi(tmp);
     }
     else {
-        ctx->api_host = flb_strdup(ptr);
-        ctx->api_port = ctx->api_https ? 443 : 80;
+        api_host = flb_sds_create(ptr);
+        api_port = io_type == FLB_IO_TLS ? 443 : 80;
     }
 
-    flb_plg_info(f_ins, "https=%i host=%s port=%i", ctx->api_https,
-                 ctx->api_host, ctx->api_port);
+    flb_plg_info(f_ins, "https=%i host=%s port=%i", io_type == FLB_IO_TLS,
+                 api_host, api_port);
 
-    if (ctx->api_https) {
-        ctx->tls = flb_tls_create(ctx->tls_verify,
-                                  ctx->tls_debug,
-                                  /* ctx->tls_vhost, */
-                                  NULL,
-                                  /* ctx->tls_ca_path, ctx->tls_ca_file, */
-                                  NULL, NULL,
-                                  NULL, NULL, NULL);
+    if (io_type == FLB_IO_TLS) {
+        ctx->tls = flb_tls_create(ctx->tls_verify, ctx->tls_debug,
+                                  ctx->tls_vhost, NULL, NULL, NULL, NULL, NULL);
         if (!ctx->tls) {
             flb_plg_error(f_ins, "TLS initialization error");
+            flb_sds_destroy(api_host);
+            rsconnect_ctx_destroy(ctx);
             return -1;
         }
-        io_type = FLB_IO_TLS;
-        flb_plg_info(f_ins, "tls.verify=%d tls.debug=%d tls.vhost=%s api=%d",
+        flb_plg_info(f_ins, "tls.verify=%d tls.debug=%d tls.vhost=%s",
                      ctx->tls->verify, ctx->tls->debug,
-                     ctx->tls->vhost == NULL ? "null" : ctx->tls->vhost,
-                     ctx->tls->api == NULL);
+                     ctx->tls->vhost ? ctx->tls->vhost : "(nil)");
     }
 
-    ctx->upstream = flb_upstream_create(config, ctx->api_host, ctx->api_port,
-                                        io_type, ctx->tls);
+    ctx->upstream = flb_upstream_create(config, api_host, api_port, io_type,
+                                        ctx->tls);
+    flb_sds_destroy(api_host);
     if (!ctx->upstream) {
         flb_plg_error(f_ins, "connection initialization error");
-        flb_free(ctx);
+        rsconnect_ctx_destroy(ctx);
         return -1;
     }
     /* Remove async flag from upstream */
@@ -585,32 +602,16 @@ static int cb_rsconnect_filter(const void *data, size_t bytes,
 static int cb_rsconnect_exit(void *data, struct flb_config *config)
 {
     (void) config;
-    struct rsconnect_ctx *ctx = data;
-    if (ctx != NULL) {
-        return 0;
-    }
-
-    if (ctx->upstream) {
-        flb_upstream_destroy(ctx->upstream);
-    }
-    if (ctx->hash_table) {
-        flb_hash_destroy(ctx->hash_table);
-    }
-    if (ctx->tls) {
-        flb_tls_destroy(ctx->tls);
-    }
-    if (ctx->auth) {
-        flb_sds_destroy(ctx->auth);
-    }
-    if (ctx->api_host) {
-        flb_free(ctx->api_host);
-    }
-
-    flb_free(ctx);
+    rsconnect_ctx_destroy((struct rsconnect_ctx *) data);
     return 0;
 }
 
 static struct flb_config_map config_map[] = {
+    {
+     FLB_CONFIG_MAP_STR, "api_url", "http://localhost:3939",
+     0, FLB_TRUE, offsetof(struct rsconnect_ctx, api_url),
+     "RStudio Connect server URL."
+    },
     {
      FLB_CONFIG_MAP_STR, "api_key", NULL,
      0, FLB_TRUE, offsetof(struct rsconnect_ctx, api_key),
@@ -620,11 +621,6 @@ static struct flb_config_map config_map[] = {
      FLB_CONFIG_MAP_SIZE, "buffer_size", "32K",
      0, FLB_TRUE, offsetof(struct rsconnect_ctx, buffer_size),
      "Buffer size for the API client",
-    },
-    {
-     FLB_CONFIG_MAP_STR, "api_url", NULL,
-     0, FLB_FALSE, 0,
-     "RStudio Connect server URL."
     },
     /* TLS */
     {
