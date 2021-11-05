@@ -381,7 +381,6 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     /* Second, we use "content GUID" to get further information for the job. */
 
     snprintf(uri, sizeof(uri) - 1, "/__api__/v1/content/%s", guid);
-    flb_free(guid);
 
     client = flb_http_client(conn, FLB_HTTP_GET, uri, NULL, 0, NULL, 0, NULL, 0);
     if (!client) {
@@ -465,6 +464,60 @@ static int get_job_api_metadata(struct flb_filter_instance *f_ins,
     if (!meta->mode) {
         flb_plg_warn(f_ins, "unexpected content lookup response: no \"app_mode\" key");
     }
+
+    flb_http_client_destroy(client);
+
+    /* Third, we use the content GUID to get tags. */
+
+    snprintf(uri, sizeof(uri) - 1, "/__api__/v1/content/%s/tags", guid);
+    flb_free(guid);
+
+    client = flb_http_client(conn, FLB_HTTP_GET, uri, NULL, 0, NULL, 0, NULL, 0);
+    if (!client) {
+        flb_plg_error(f_ins, "http client error");
+        flb_upstream_conn_release(conn);
+        return -1;
+    }
+
+    flb_http_buffer_size(client, ctx->buffer_size);
+    flb_http_add_header(client, "User-Agent", 10, "Fluent-Bit", 10);
+    flb_http_add_header(client, "Authorization", 13, ctx->auth,
+                        flb_sds_len(ctx->auth));
+
+    ret = flb_http_do(client, &bytes_sent);
+    if (ret < 0) {
+        flb_plg_error(f_ins, "http_do=%d", ret);
+        goto release;
+    }
+
+    if (client->resp.status == 404) {
+        flb_plg_warn(f_ins, "guid not found -- RSConnect may be outdated");
+        ret = -1;
+        goto release;
+    }
+    else if (client->resp.status != 200) {
+        if (client->resp.payload_size > 0) {
+            flb_plg_warn(f_ins, "unexpected tag lookup response: status=%d body=\"%s\"",
+                         client->resp.status, client->resp.payload);
+        }
+        else {
+            flb_plg_warn(f_ins, "unexpected tag lookup response: status=%d",
+                         client->resp.status);
+        }
+        ret = -1;
+        goto release;
+    }
+
+    ret = flb_pack_json(client->resp.payload, client->resp.payload_size, &data,
+                        &size, &root_type);
+    if (ret < 0) {
+        flb_plg_error(f_ins, "failed to deserialize tag lookup: error=%d size=%d body=\"%s\"",
+                      ret, client->resp.payload_size, client->resp.payload);
+        goto release;
+    }
+
+    flb_pack_print(data, size);
+    flb_free(data);
 
     ret = 0;
  release:
